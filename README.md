@@ -52,3 +52,7 @@ All configuration is via environment variables. Nothing is hardcoded.
   because hosts commonly render only the text — bare text would otherwise arrive
   anonymous.
 - Read receipts are sent for delivered messages.
+
+## License
+
+[Blue Oak Model License 1.0.0](LICENSE.md)

@@ -2,6 +2,7 @@
   "name": "signal-mcpl",
   "version": "0.5.0",
   "description": "MCPL server bridging Signal via signal-cli daemon (JSON-RPC + SSE)",
+  "license": "BlueOak-1.0.0",
   "type": "module",
   "main": "./dist/src/index.js",
   "bin": { "signal-mcpl": "./dist/src/index.js" },
