@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * signal-mcpl v0.2 — MCPL server bridging Signal via signal-cli daemon (HTTP JSON-RPC + SSE).
+ * signal-mcpl v0.5.0 — MCPL server bridging Signal via signal-cli daemon (HTTP JSON-RPC + SSE).
  * Exposes Signal DMs and group chats as MCPL channels, plus a signal_send tool.
  * DMs:    channel signal:dm:<uuid>      tags: chat:dm, chat:addressed, chat:from-human
  * Groups: channel signal:group:<gid>    tags: chat:ambient, chat:from-human
@@ -409,7 +409,7 @@ class SignalMcpl {
 async function main(): Promise<void> {
   if (!process.argv.includes('--stdio')) { console.error('usage: signal-mcpl --stdio'); process.exit(1); }
   if (!ACCOUNT) console.error('[signal-mcpl] WARNING: SIGNAL_ACCOUNT not set (informational only)');
-  console.error(`[signal-mcpl] v0.2.1 starting; daemon=${DAEMON} whitelist=${DM_USERS.length ? DM_USERS.length + ' user(s)' : 'OPEN'}`);
+  console.error(`[signal-mcpl] v0.5.0 starting; daemon=${DAEMON} whitelist=${DM_USERS.length ? DM_USERS.length + ' user(s)' : 'OPEN'}`);
   const conn: any = McplConnection.fromStreams(process.stdin, process.stdout);
   if (typeof conn.on === 'function') conn.on('error', (e: any) => { console.error('[signal-mcpl] connection error:', e?.message ?? e); process.exit(0); });
   const server = new SignalMcpl();
