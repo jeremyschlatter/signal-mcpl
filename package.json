@@ -1,0 +1,12 @@
+{
+  "name": "signal-mcpl",
+  "version": "0.5.0",
+  "description": "MCPL server bridging Signal via signal-cli daemon (JSON-RPC + SSE)",
+  "type": "module",
+  "main": "./dist/src/index.js",
+  "bin": { "signal-mcpl": "./dist/src/index.js" },
+  "scripts": { "build": "tsc" },
+  "dependencies": { "@animalabs/mcpl-core": "^0.2.1" },
+  "devDependencies": { "typescript": "^5.5.0", "@types/node": "^20.0.0" },
+  "engines": { "node": ">=20" }
+}
