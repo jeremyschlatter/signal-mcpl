@@ -14,6 +14,10 @@ const ATTACH_DIR = process.env.SIGNAL_ATTACH_DIR ?? `${process.env.HOME}/.local/
 const ATTACH_MAX = Number(process.env.SIGNAL_ATTACH_MAX_BYTES ?? 4_000_000);
 const DAEMON = process.env.SIGNAL_DAEMON_URL ?? 'http://127.0.0.1:8090';
 const DM_USERS = (process.env.SIGNAL_DM_USERS ?? '').split(',').map(s => s.trim()).filter(Boolean);
+// v0.5.1: if set, ONLY these group ids are delivered; everything else (other
+// groups AND all DMs) is dropped. Built for shadow-mode instances that must
+// never hear or answer production channels.
+const GROUP_WHITELIST = (process.env.SIGNAL_GROUP_WHITELIST ?? '').split(',').map(s => s.trim()).filter(Boolean);
 const DEBUG_LOG = process.env.SIGNAL_DEBUG_LOG ?? '';
 const CONTACTS_FILE = process.env.SIGNAL_CONTACTS_FILE ?? '';
 
@@ -291,8 +295,15 @@ class SignalMcpl {
     if (DM_USERS.length && !DM_USERS.includes(uuid) && !(number && DM_USERS.includes(number))) {
       dbg('drop-not-whitelisted', { uuid, number }); return;
     }
+    const giEarly = dm.groupInfo;
+    if (GROUP_WHITELIST.length) {
+      const gidEarly = giEarly?.groupId ? String(giEarly.groupId) : null;
+      if (!gidEarly || !GROUP_WHITELIST.includes(gidEarly)) {
+        dbg('drop-not-in-group-whitelist', { gid: gidEarly }); return;
+      }
+    }
     const name: string = String(env.sourceName || this.contacts[uuid] || uuid.slice(0, 8));
-    const gi = dm.groupInfo;
+    const gi = giEarly;
     let channelId: string;
     let tags: string[];
     if (gi?.groupId) {
@@ -409,7 +420,7 @@ class SignalMcpl {
 async function main(): Promise<void> {
   if (!process.argv.includes('--stdio')) { console.error('usage: signal-mcpl --stdio'); process.exit(1); }
   if (!ACCOUNT) console.error('[signal-mcpl] WARNING: SIGNAL_ACCOUNT not set (informational only)');
-  console.error(`[signal-mcpl] v0.5.0 starting; daemon=${DAEMON} whitelist=${DM_USERS.length ? DM_USERS.length + ' user(s)' : 'OPEN'}`);
+  console.error(`[signal-mcpl] v0.5.1 starting; daemon=${DAEMON} whitelist=${DM_USERS.length ? DM_USERS.length + ' user(s)' : 'OPEN'}`);
   const conn: any = McplConnection.fromStreams(process.stdin, process.stdout);
   if (typeof conn.on === 'function') conn.on('error', (e: any) => { console.error('[signal-mcpl] connection error:', e?.message ?? e); process.exit(0); });
   const server = new SignalMcpl();
