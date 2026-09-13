@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * signal-mcpl v0.5.0 — MCPL server bridging Signal via signal-cli daemon (HTTP JSON-RPC + SSE).
+ * signal-mcpl v0.6.0 — MCPL server bridging Signal via signal-cli daemon (HTTP JSON-RPC + SSE).
  * Exposes Signal DMs and group chats as MCPL channels, plus a signal_send tool.
  * DMs:    channel signal:dm:<uuid>      tags: chat:dm, chat:addressed, chat:from-human
  * Groups: channel signal:group:<gid>    tags: chat:ambient, chat:from-human
@@ -60,6 +60,78 @@ const toolDefinitions = [
   },
 ];
 
+
+/**
+ * Split long outgoing text into segments that render fully (no "Read More"
+ * collapse) on Signal clients. Documented client limits as of 2026-07:
+ *   Android: MAX_BODY_DISPLAY_LENGTH = 1000 chars, MAX_BODY_DISPLAY_LINES = 16
+ *            newlines (MessageRecordUtil.kt; line check added 0a6a13c 2026-07).
+ *   Desktop: collapses ~>900 chars, displays first ~800 (issue #14017).
+ * We target <=800 chars AND <=12 newlines per segment for margin across
+ * clients. Splits prefer paragraph boundaries (blank lines, fenced code blocks
+ * kept atomic), then line boundaries, then a word boundary as last resort.
+ * Counting happens on the markdown source, which is >= the rendered length
+ * after style markers are stripped, so limits hold post-conversion.
+ */
+const SEG_MAX_CHARS = 800;
+const SEG_MAX_NEWLINES = 12;
+
+function splitForSignal(md: string): string[] {
+  const fits = (s: string) => s.length <= SEG_MAX_CHARS && (s.match(/\n/g)?.length ?? 0) <= SEG_MAX_NEWLINES;
+  if (fits(md)) return [md];
+
+  // Block-tokenize: paragraphs separated by blank lines; fenced code atomic.
+  const lines = md.split('\n');
+  const blocks: string[] = [];
+  let cur: string[] = [];
+  let inFence = false;
+  for (const line of lines) {
+    if (/^\s*```/.test(line)) inFence = !inFence;
+    if (!inFence && line.trim() === '') {
+      if (cur.length) { blocks.push(cur.join('\n')); cur = []; }
+    } else {
+      cur.push(line);
+    }
+  }
+  if (cur.length) blocks.push(cur.join('\n'));
+
+  // Oversized single blocks: split at line boundaries, then word boundaries.
+  const atoms: string[] = [];
+  for (const b of blocks) {
+    if (fits(b)) { atoms.push(b); continue; }
+    let piece: string[] = [];
+    const flush = () => { if (piece.length) { atoms.push(piece.join('\n')); piece = []; } };
+    for (const line of b.split('\n')) {
+      if (line.length > SEG_MAX_CHARS) {
+        flush();
+        let rest = line;
+        while (rest.length > SEG_MAX_CHARS) {
+          const cut = rest.lastIndexOf(' ', SEG_MAX_CHARS);
+          const at = cut > SEG_MAX_CHARS / 2 ? cut : SEG_MAX_CHARS;
+          atoms.push(rest.slice(0, at));
+          rest = rest.slice(at).replace(/^ /, '');
+        }
+        if (rest) piece = [rest];
+        continue;
+      }
+      const candidate = [...piece, line].join('\n');
+      if (!fits(candidate)) flush();
+      piece.push(line);
+    }
+    flush();
+  }
+
+  // Greedily pack blocks into segments joined by blank lines.
+  const segs: string[] = [];
+  let seg = '';
+  for (const a of atoms) {
+    const candidate = seg ? `${seg}\n\n${a}` : a;
+    if (seg && !fits(candidate)) { segs.push(seg); seg = a; }
+    else seg = candidate;
+  }
+  if (seg) segs.push(seg);
+  return segs.filter(s => s.trim() !== '');
+}
 
 /**
  * Markdown -> Signal text styles (BodyRange). Converts the subset Signal can
@@ -159,7 +231,7 @@ class SignalMcpl {
         tools: {},
         ...(this.mcplMode ? { experimental: { mcpl: { version: '0.4', pushEvents: false, channels: true, rollback: false, featureSets } } } : {}),
       },
-      serverInfo: { name: 'signal-mcpl', version: '0.5.0' },
+      serverInfo: { name: 'signal-mcpl', version: '0.6.0' },
     });
     dbg('initialized', { mcplMode: this.mcplMode, known: Object.keys(this.contacts).length, whitelist: DM_USERS.length });
     if (this.mcplMode) {
@@ -209,10 +281,16 @@ class SignalMcpl {
     const text = (Array.isArray(p.content) ? p.content : [])
       .filter((b: any) => b?.type === 'text').map((b: any) => String(b.text ?? '')).join('\n').trim();
     if (!text) return { delivered: false };
-    const { message, textStyle } = markdownToSignal(text);
-    const r = await this.rpc('send', { ...target, message, ...(textStyle.length ? { textStyle } : {}) });
-    dbg('published', { cid, ts: r?.timestamp });
-    return { delivered: true, messageId: String(r?.timestamp ?? Date.now()) };
+    const parts = splitForSignal(text);
+    let lastTs: any = null;
+    for (let i = 0; i < parts.length; i++) {
+      if (i > 0) await new Promise(res => setTimeout(res, 400)); // preserve ordering
+      const { message, textStyle } = markdownToSignal(parts[i]);
+      const r = await this.rpc('send', { ...target, message, ...(textStyle.length ? { textStyle } : {}) });
+      lastTs = r?.timestamp;
+      dbg('published', { cid, ts: r?.timestamp, part: `${i + 1}/${parts.length}` });
+    }
+    return { delivered: true, messageId: String(lastTs ?? Date.now()) };
   }
 
   private async handleToolCall(name: string, args: any): Promise<any> {
@@ -222,9 +300,15 @@ class SignalMcpl {
       const msg = String(args.message ?? '');
       if (!rec || !msg) return text('recipient and message are required', true);
       try {
-        const conv = markdownToSignal(msg);
-        const r = await this.rpc('send', { recipient: [rec], message: conv.message, ...(conv.textStyle.length ? { textStyle: conv.textStyle } : {}) });
-        return text(`Sent (timestamp ${r?.timestamp}).`);
+        const parts = splitForSignal(msg);
+        const stamps: any[] = [];
+        for (let i = 0; i < parts.length; i++) {
+          if (i > 0) await new Promise(res => setTimeout(res, 400));
+          const conv = markdownToSignal(parts[i]);
+          const r = await this.rpc('send', { recipient: [rec], message: conv.message, ...(conv.textStyle.length ? { textStyle: conv.textStyle } : {}) });
+          stamps.push(r?.timestamp);
+        }
+        return text(parts.length > 1 ? `Sent as ${parts.length} parts (timestamps ${stamps.join(', ')}).` : `Sent (timestamp ${stamps[0]}).`);
       } catch (e: any) { return text(`Send failed: ${e?.message ?? e}`, true); }
     }
     if (name === 'signal_react') {
