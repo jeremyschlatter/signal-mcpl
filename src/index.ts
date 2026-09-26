@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * signal-mcpl v0.6.0 — MCPL server bridging Signal via signal-cli daemon (HTTP JSON-RPC + SSE).
+ * signal-mcpl v0.6.1 — MCPL server bridging Signal via signal-cli daemon (HTTP JSON-RPC + SSE).
  * Exposes Signal DMs and group chats as MCPL channels, plus a signal_send tool.
  * DMs:    channel signal:dm:<uuid>      tags: chat:dm, chat:addressed, chat:from-human
  * Groups: channel signal:group:<gid>    tags: chat:ambient, chat:from-human
@@ -196,6 +196,25 @@ class SignalMcpl {
   private contacts: Record<string, string> = loadContacts();
   private registered = new Set<string>();
   private mcplMode = false;
+  // [v0.6.1] Redelivery dedupe: Signal servers redeliver unacked envelopes
+  // with the ORIGINAL message timestamp (2026-09-25 outage: server 500s on
+  // receipt sends -> ~15 copies of each message reached the agent). Key on
+  // (sender uuid, envelope timestamp); bounded FIFO so memory stays flat.
+  private seenEnvelopes = new Map<string, number>();
+  private static readonly SEEN_CAP = 1000;
+
+  /** Returns true if this (uuid, timestamp) was already processed; records it otherwise. */
+  private isDuplicateEnvelope(uuid: string, ts: unknown): boolean {
+    if (ts == null) return false; // no timestamp -> can't dedupe, let it through
+    const key = `${uuid}:${ts}`;
+    if (this.seenEnvelopes.has(key)) return true;
+    this.seenEnvelopes.set(key, Date.now());
+    if (this.seenEnvelopes.size > SignalMcpl.SEEN_CAP) {
+      const oldest = this.seenEnvelopes.keys().next().value;
+      if (oldest !== undefined) this.seenEnvelopes.delete(oldest);
+    }
+    return false;
+  }
 
   private async rpc(m: string, params: unknown): Promise<any> {
     const res = await fetch(`${DAEMON}/api/v1/rpc`, {
@@ -231,7 +250,7 @@ class SignalMcpl {
         tools: {},
         ...(this.mcplMode ? { experimental: { mcpl: { version: '0.4', pushEvents: false, channels: true, rollback: false, featureSets } } } : {}),
       },
-      serverInfo: { name: 'signal-mcpl', version: '0.6.0' },
+      serverInfo: { name: 'signal-mcpl', version: '0.6.1' },
     });
     dbg('initialized', { mcplMode: this.mcplMode, known: Object.keys(this.contacts).length, whitelist: DM_USERS.length });
     if (this.mcplMode) {
@@ -375,6 +394,17 @@ class SignalMcpl {
     if (!dm) return;
     const uuid: string = String(env.sourceUuid ?? env.source ?? '');
     if (!uuid) return;
+    // [v0.6.1] Drop server redeliveries before they reach the agent's context —
+    // but still ack them: the redelivery loop only stops once the server gets a
+    // receipt, so a silent drop without an ack would loop forever.
+    if (this.isDuplicateEnvelope(uuid, env.timestamp)) {
+      dbg('drop-duplicate-redelivery', { uuid, ts: env.timestamp });
+      try {
+        await this.rpc('sendReceipt', { recipient: uuid, targetTimestamp: Number(env.timestamp), type: 'read' });
+        dbg('duplicate-acked', { uuid, ts: env.timestamp });
+      } catch (e: any) { dbg('duplicate-ack-failed', String(e?.message ?? e)); }
+      return;
+    }
     const number: string = String(env.sourceNumber ?? '');
     if (DM_USERS.length && !DM_USERS.includes(uuid) && !(number && DM_USERS.includes(number))) {
       dbg('drop-not-whitelisted', { uuid, number }); return;
@@ -504,7 +534,7 @@ class SignalMcpl {
 async function main(): Promise<void> {
   if (!process.argv.includes('--stdio')) { console.error('usage: signal-mcpl --stdio'); process.exit(1); }
   if (!ACCOUNT) console.error('[signal-mcpl] WARNING: SIGNAL_ACCOUNT not set (informational only)');
-  console.error(`[signal-mcpl] v0.5.1 starting; daemon=${DAEMON} whitelist=${DM_USERS.length ? DM_USERS.length + ' user(s)' : 'OPEN'}`);
+  console.error(`[signal-mcpl] v0.6.1 starting; daemon=${DAEMON} whitelist=${DM_USERS.length ? DM_USERS.length + ' user(s)' : 'OPEN'}`);
   const conn: any = McplConnection.fromStreams(process.stdin, process.stdout);
   if (typeof conn.on === 'function') conn.on('error', (e: any) => { console.error('[signal-mcpl] connection error:', e?.message ?? e); process.exit(0); });
   const server = new SignalMcpl();
