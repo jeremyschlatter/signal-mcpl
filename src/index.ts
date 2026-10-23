@@ -67,13 +67,15 @@ const toolDefinitions = [
  *   Android: MAX_BODY_DISPLAY_LENGTH = 1000 chars, MAX_BODY_DISPLAY_LINES = 16
  *            newlines (MessageRecordUtil.kt; line check added 0a6a13c 2026-07).
  *   Desktop: collapses ~>900 chars, displays first ~800 (issue #14017).
- * We target <=800 chars AND <=12 newlines per segment for margin across
+ *   iOS: observed fold at ~513 chars into a 754-char segment
+ *   (2026-10-22, Alice's device) — the tightest client measured.
+ * We target <=450 chars AND <=12 newlines per segment for margin across
  * clients. Splits prefer paragraph boundaries (blank lines, fenced code blocks
  * kept atomic), then line boundaries, then a word boundary as last resort.
  * Counting happens on the markdown source, which is >= the rendered length
  * after style markers are stripped, so limits hold post-conversion.
  */
-const SEG_MAX_CHARS = 800;
+const SEG_MAX_CHARS = 450;
 const SEG_MAX_NEWLINES = 12;
 
 function splitForSignal(md: string): string[] {
